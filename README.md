@@ -141,7 +141,28 @@ oci compute instance update \
 
 ---
 
-## 7. 提醒
+## 7. 最佳實踐
+
+### 7.1 安全
+- API key / SSH key **永遠不可進 git**；用 GitHub Secrets 或 VPS 環境變數注入。
+- OCI API key 用 separate fingerprint；Console 生成後 local 只存私鑰，不上雲。
+- VPS 防火牆最小暴露：443 + 80 進，SSH 限 IP 或換 port。
+- 每天自動備份；保留 7 天滾動；Object Storage 再做异地備份。
+
+### 7.2 架構
+- 先跑 `/api/health` + `/health` 雙 endpoint 監控；cron 失敗通知。
+- Next.js 用 systemd + nginx reverse proxy；不用 PM2（節省記憶體）。
+- Always Free 資源分階段：先 Compute → 再 Autonomous DB → 最後 LB。
+- Gateway 用 Docker 固化；VPS 重建只要 5 分鐘。
+
+### 7.3 GitHub Actions CD
+- Secrets 全部進 GitHub Secrets，工作流程使用 `npm ci --frozen-lockfile`。
+- deploy 步驟：build → test → ssh deploy → systemctl restart。
+- 每次 push 進 main = 自動 deploy；失敗立即 rollback。
+
+---
+
+## 8. 提醒
 - **GitHub Secret / PAT 安全性**：請不要把金鑰貼到 chat，自己旋轉舊的。
 - **OCI 免費層閒置策略**：重建後補 keepalive 腳本避免回收。
 - **Firebase 免費層**：Spark plan 無 Cloud Storage；如需上傳圖片需改 External URL。
