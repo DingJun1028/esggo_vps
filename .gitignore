@@ -1,2 +1,5 @@
 .hermes
 .env.production
+id_rsa_esggo*
+*.pem
+oci_api_key*
