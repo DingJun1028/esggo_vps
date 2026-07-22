@@ -1,0 +1,103 @@
+name: esggo_vps_full_deploy
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [deploy_requested]
+
+jobs:
+  deploy-app:
+    name: Deploy ESGGO Next.js App
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app source
+        uses: actions/checkout@v4
+        with:
+          repository: DingJun1028/esggo
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ORACLE_VPS_SSH_KEY }}
+
+      - name: Deploy App to VPS
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ${{ secrets.ORACLE_VPS_USER }}@${{ secrets.ORACLE_VPS_HOST }} <<'REMOTE'
+          set -e
+          echo '=== DEPLOY APP ==='
+          cd /opt/esggo
+          sudo systemctl stop esggo-app || true
+          sudo git fetch origin
+          sudo git reset --hard origin/main
+          export NEXT_PUBLIC_APP_URL=${{ secrets.NEXT_PUBLIC_APP_URL }}
+          pnpm install --frozen-lockfile
+          pnpm run build
+          sudo systemctl start esggo-app
+          sleep 3
+          curl -sS -m 10 http://127.0.0.1:3000/api/health || echo 'APP_HEALTH_FAIL'
+          REMOTE
+
+  deploy-gateway:
+    name: Deploy OmniAgent Gateway
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ORACLE_VPS_SSH_KEY }}
+
+      - name: Deploy Gateway to VPS
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ${{ secrets.ORACLE_VPS_USER }}@${{ secrets.ORACLE_VPS_HOST }} <<'REMOTE'
+          set -e
+          echo '=== DEPLOY GATEWAY ==='
+          cd /opt/esggo
+          sudo git fetch origin
+          sudo git reset --hard origin/main
+          sudo docker build -f vps/Dockerfile.gateway -t esggo-gateway:v1 .
+          sudo systemctl restart esggo-gateway
+          sleep 3
+          curl -sS -m 10 http://127.0.0.1:8642/health || echo 'GW_HEALTH_FAIL'
+          REMOTE
+
+  deploy-worker:
+    name: Deploy Cloudflare Worker
+    runs-on: ubuntu-latest
+    needs: [deploy-app, deploy-gateway]
+    steps:
+      - name: Setup Wrangler
+        uses: cloudflare/wrangler-action@v3.3.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Checkout worker source
+        uses: actions/checkout@v4
+        with:
+          repository: DingJun1028/esggo
+          token: ${{ secrets.GH_PAT }}
+          path: esggo
+
+      - name: Deploy Worker
+        working-directory: esggo
+        run: |
+          echo '=== DEPLOY WORKER ==='
+          wrangler deploy --dry-run 2>/dev/null || true
+          # Production deploy when CF creds are ready
+          if [ -n "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            wrangler deploy
+          else
+            echo 'SKIP: CLOUDFLARE_API_TOKEN not set'
+          fi
+
+  verify:
+    name: Verify Public Endpoints
+    runs-on: ubuntu-latest
+    needs: deploy-worker
+    steps:
+      - name: Check app health
+        run: curl -sS -m 15 http://${{ secrets.ORACLE_VPS_HOST }}/api/health || exit 1
+
+      - name: Check gateway health
+        run: curl -sS -m 15 http://${{ secrets.ORACLE_VPS_HOST }}/health || exit 1
